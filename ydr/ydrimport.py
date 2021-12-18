@@ -157,10 +157,8 @@ def drawable_model_to_obj(model, materials, name, lod, bones=None):
     for geometry in model.geometries:
         # gather data
         data = geometry.vertex_buffer.get_data()
-        verts = []
         for vertex in data:
-            verts.append(vertex)
-            all_verts.append(vertex)
+            all_verts.append(id(vertex))
             vertices.append(vertex.position)
             if hasattr(vertex, "normal"):
                 has_normals = True
@@ -177,7 +175,7 @@ def drawable_model_to_obj(model, materials, name, lod, bones=None):
                     colors[key].append(value)
 
         for index in geometry.index_buffer.data:
-            vert = verts[index]
+            vert = id(data[index])
             indices.append(all_verts.index(vert))
 
         used_materials.append(materials[geometry.shader_index])
