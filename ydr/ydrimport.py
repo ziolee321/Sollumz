@@ -142,46 +142,72 @@ def create_vertexcolor_layer(mesh, num, name, colors):
         color_layer.data[i].color = divide_list(rgba, 255)
 
 
-def geometry_to_obj(geometry, bones=None, name=None):
+def drawable_model_to_obj(model, materials, name, lod, bones=None):
 
+    used_materials = []
     vertices = []
-    faces = []
+    indices = []
     normals = []
     texcoords = {}
     colors = {}
-
     has_normals = False
 
-    # gather data
-    data = geometry.vertex_buffer.get_data()
-    for vertex in data:
-        vertices.append(vertex.position)
-        if hasattr(vertex, "normal"):
-            has_normals = True
-            normals.append(vertex.normal)
+    all_verts = []
 
-        for key, value in vertex._asdict().items():
-            if 'texcoord' in key:
-                if not key in texcoords.keys():
-                    texcoords[key] = []
-                texcoords[key].append(value)
-            if 'colour' in key:
-                if not key in colors.keys():
-                    colors[key] = []
-                colors[key].append(value)
+    for geometry in model.geometries:
+        # gather data
+        data = geometry.vertex_buffer.get_data()
+        verts = []
+        for vertex in data:
+            verts.append(vertex)
+            all_verts.append(vertex)
+            vertices.append(vertex.position)
+            if hasattr(vertex, "normal"):
+                has_normals = True
+                normals.append(vertex.normal)
 
-    indices = geometry.index_buffer.data
+            for key, value in vertex._asdict().items():
+                if 'texcoord' in key:
+                    if not key in texcoords.keys():
+                        texcoords[key] = []
+                    texcoords[key].append(value)
+                if 'colour' in key:
+                    if not key in colors.keys():
+                        colors[key] = []
+                    colors[key].append(value)
+
+        for index in geometry.index_buffer.data:
+            vert = verts[index]
+            indices.append(all_verts.index(vert))
+
+        used_materials.append(materials[geometry.shader_index])
+
     # Split indices into groups of 3
     faces = [indices[i * 3:(i + 1) * 3]
              for i in range((len(indices) + 3 - 1) // 3)]
 
     # create mesh
-    mesh = bpy.data.meshes.new(SOLLUMZ_UI_NAMES[SollumType.DRAWABLE_GEOMETRY])
+    mesh = bpy.data.meshes.new(
+        SOLLUMZ_UI_NAMES[SollumType.DRAWABLE_GEOMETRY])
     mesh.from_pydata(vertices, [], faces)
+
+    dobj = bpy.data.objects.new(
+        SOLLUMZ_UI_NAMES[SollumType.DRAWABLE_MODEL], mesh)
+    dobj.sollum_type = SollumType.DRAWABLE_MODEL
+    dobj.empty_display_size = 0
+    dobj.drawable_model_properties.sollum_lod = lod
+    dobj.drawable_model_properties.render_mask = model.render_mask
+    dobj.drawable_model_properties.bone_index = model.bone_index
+    dobj.drawable_model_properties.unknown_1 = model.unknown_1
+    dobj.drawable_model_properties.flags = model.flags
+
+    for mat in used_materials:
+        dobj.data.materials.append(mat)
 
     # set normals
     if has_normals:
-        mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+        mesh.polygons.foreach_set(
+            "use_smooth", [True] * len(mesh.polygons))
         mesh.normals_split_custom_set_from_vertices(normals)
         mesh.use_auto_smooth = True
 
@@ -197,8 +223,6 @@ def geometry_to_obj(geometry, bones=None, name=None):
         create_vertexcolor_layer(mesh, i, layer_name, color)
         i += 1
 
-    obj = bpy.data.objects.new(name + "_mesh", mesh)
-
     # set weights
     if hasattr(data[0], "blendweights"):
         if data[0].blendweights is not None and len(data) > 0:
@@ -207,42 +231,18 @@ def geometry_to_obj(geometry, bones=None, name=None):
             for i in range(num):
                 bone_name = bones[i].name if bones and i < bone_count \
                     else f"UNKNOWN_BONE.{str(i)}.{geometry.bone_ids[len(geometry.bone_ids) - 1]}"
-                obj.vertex_groups.new(name=bone_name)
+                dobj.vertex_groups.new(name=bone_name)
 
             for vertex_idx, vertex in enumerate(data):
                 for i in range(0, 4):
                     weight = vertex.blendweights[i] / 255
                     index = vertex.blendindices[i]
                     if (weight > 0.0):
-                        obj.vertex_groups[index].add(
+                        dobj.vertex_groups[index].add(
                             [vertex_idx], weight, "ADD")
 
-            remove_unused_vertex_groups_of_mesh(obj)
-
-    return obj
-
-
-def drawable_model_to_obj(model, materials, name, lod, bones=None):
-    dobj = bpy.data.objects.new(
-        SOLLUMZ_UI_NAMES[SollumType.DRAWABLE_MODEL], None)
-    dobj.sollum_type = SollumType.DRAWABLE_MODEL
-    dobj.empty_display_size = 0
-    dobj.drawable_model_properties.sollum_lod = lod
-    dobj.drawable_model_properties.render_mask = model.render_mask
-    dobj.drawable_model_properties.bone_index = model.bone_index
-    dobj.drawable_model_properties.unknown_1 = model.unknown_1
-    dobj.drawable_model_properties.flags = model.flags
-
-    for child in model.geometries:
-        child_obj = geometry_to_obj(child, bones=bones, name=name)
-        child_obj.sollum_type = SollumType.DRAWABLE_GEOMETRY
-        child_obj.data.materials.append(materials[child.shader_index])
-        child_obj.parent = dobj
-        bpy.context.collection.objects.link(child_obj)
-        # do this after because object has to be linked, will do nothing if a tint parameter is not found... kinda stupid way to do it but its how
-        # we check if its a tint shader in the first place so ig it makes sense...
-        create_tinted_shader_graph(child_obj)
-
+    remove_unused_vertex_groups_of_mesh(dobj)
+    create_tinted_shader_graph(dobj)
     bpy.context.collection.objects.link(dobj)
 
     return dobj
@@ -512,17 +512,6 @@ def drawable_to_obj(drawable, filepath, name, bones_override=None, materials=Non
             model, materials, drawable.name, LODLevel.VERYLOW, bones=bones)
         dobj.parent = obj
 
-    for model in obj.children:
-        if model.sollum_type != SollumType.DRAWABLE_MODEL:
-            continue
-
-        for child in model.children:
-            if child.sollum_type != SollumType.DRAWABLE_GEOMETRY:
-                continue
-
-            mod = child.modifiers.new("Armature", 'ARMATURE')
-            mod.object = obj
-
     for light in drawable.lights:
         light_to_obj(light, obj)
 
@@ -533,7 +522,9 @@ def import_ydr(filepath, import_settings):
     ydr_xml = YDR.from_xml_file(filepath)
     drawable = drawable_to_obj(ydr_xml, filepath, os.path.basename(
         filepath.replace(YDR.file_extension, '')))
-    if import_settings.join_geometries:
+
+
+'''    if import_settings.join_geometries:
         for child in drawable.children:
             if child.sollum_type == SollumType.DRAWABLE_MODEL:
-                join_drawable_geometries(child)
+                join_drawable_geometries(child)'''
